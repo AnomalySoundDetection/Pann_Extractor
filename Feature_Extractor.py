@@ -224,8 +224,7 @@ class _ResNet(nn.Module):
 # ResNet Model
 ################################################################
 class ResNet38(nn.Module):
-    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
-        fmax):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, fmax):
         
         super(ResNet38, self).__init__()
 
@@ -311,6 +310,94 @@ class ResNet38(nn.Module):
         #output_dict = {'clipwise_output': clipwise_output, 'embedding': embedding}
 
         return embedding
+    
+class ResNet22(nn.Module):
+    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
+        fmax, classes_num):
+        
+        super(ResNet22, self).__init__()
+
+        window = 'hann'
+        center = True
+        pad_mode = 'reflect'
+        ref = 1.0
+        amin = 1e-10
+        top_db = None
+
+        # Spectrogram extractor
+        self.spectrogram_extractor = Spectrogram(n_fft=window_size, hop_length=hop_size, 
+            win_length=window_size, window=window, center=center, pad_mode=pad_mode, 
+            freeze_parameters=True)
+
+        # Logmel feature extractor
+        self.logmel_extractor = LogmelFilterBank(sr=sample_rate, n_fft=window_size, 
+            n_mels=mel_bins, fmin=fmin, fmax=fmax, ref=ref, amin=amin, top_db=top_db, 
+            freeze_parameters=True)
+
+        # Spec augmenter
+        self.spec_augmenter = SpecAugmentation(time_drop_width=64, time_stripes_num=2, 
+            freq_drop_width=8, freq_stripes_num=2)
+
+        self.bn0 = nn.BatchNorm2d(64)
+
+        self.conv_block1 = ConvBlock(in_channels=1, out_channels=64)
+        # self.conv_block2 = ConvBlock(in_channels=64, out_channels=64)
+
+        self.resnet = _ResNet(block=_ResnetBasicBlock, layers=[2, 2, 2, 2], zero_init_residual=True)
+
+        self.conv_block_after1 = ConvBlock(in_channels=512, out_channels=2048)
+
+        self.fc1 = nn.Linear(2048, 2048)
+        self.fc_audioset = nn.Linear(2048, classes_num, bias=True)
+
+        self.init_weights()
+
+    def init_weights(self):
+        init_bn(self.bn0)
+        init_layer(self.fc1)
+        init_layer(self.fc_audioset)
+
+
+    def forward(self, input, mixup_lambda=None):
+        """
+        Input: (batch_size, data_length)"""
+
+        x = self.spectrogram_extractor(input)   # (batch_size, 1, time_steps, freq_bins)
+        x = self.logmel_extractor(x)    # (batch_size, 1, time_steps, mel_bins)
+        
+        x = x.transpose(1, 3)
+        x = self.bn0(x)
+        x = x.transpose(1, 3)
+        
+        if self.training:
+            x = self.spec_augmenter(x)
+
+        # Mixup on spectrogram
+        """
+        if self.training and mixup_lambda is not None:
+            x = do_mixup(x, mixup_lambda)
+        """
+
+        x = self.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training, inplace=True)
+        x = self.resnet(x)
+        x = F.avg_pool2d(x, kernel_size=(2, 2))
+        x = F.dropout(x, p=0.2, training=self.training, inplace=True)
+        x = self.conv_block_after1(x, pool_size=(1, 1), pool_type='avg')
+        x = F.dropout(x, p=0.2, training=self.training, inplace=True)
+        x = torch.mean(x, dim=3)
+        
+        (x1, _) = torch.max(x, dim=2)
+        x2 = torch.mean(x, dim=2)
+        x = x1 + x2
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu_(self.fc1(x))
+        embedding = F.dropout(x, p=0.5, training=self.training)
+        #clipwise_output = torch.sigmoid(self.fc_audioset(x))
+        
+        #output_dict = {'clipwise_output': clipwise_output, 'embedding': embedding}
+
+        return embedding
 
 ################################################################
 # Load Pretrain Model
@@ -324,12 +411,12 @@ def load_weight(model, weight_path):
     return model
 
 def load_extractor(sample_rate=32000,
-              window_size=1024,
-              hop_size=256,
-              mel_bins=64,
-              fmin=50,
-              fmax=16000,
-              weight_path="ResNet38_mAP=0.434.pth"):
+                   window_size=1024,
+                   hop_size=256,
+                   mel_bins=64,
+                   fmin=50,
+                   fmax=14000,
+                   weight_path="ResNet38_mAP=0.434.pth"):
     
     extractor = ResNet38(sample_rate=sample_rate, window_size=window_size, hop_size=hop_size, mel_bins=mel_bins, fmin=fmin, fmax=fmax)
     extractor = load_weight(extractor, weight_path=weight_path)
