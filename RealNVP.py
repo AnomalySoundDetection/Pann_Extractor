@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 
 # from normflows import distributions
+import normflows as nf
 from normflows import utils
 
 
@@ -146,3 +147,6 @@ class NormalizingFlow(nn.Module):
             log_q += log_det
         log_q += self.q0.log_prob(z)
         return z, -log_q
+
+
+def BuildFlow()
