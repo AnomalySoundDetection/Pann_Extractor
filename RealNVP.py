@@ -149,4 +149,5 @@ class NormalizingFlow(nn.Module):
         return z, -log_q
 
 
-def BuildFlow()
+def BuildFlow():
+    pass
