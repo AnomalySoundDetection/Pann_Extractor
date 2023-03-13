@@ -29,7 +29,6 @@ from sklearn import metrics
 # original lib
 import common as com
 from pytorch_model import *
-from torchsummary import summary
 from torch.utils.data import DataLoader
 ########################################################################
 

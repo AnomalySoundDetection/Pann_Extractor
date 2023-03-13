@@ -19,7 +19,7 @@ import gc
 ########################################################################
 # import additional python-library
 ########################################################################
-import numpy
+import numpy as np
 # from import
 from tqdm import tqdm
 # original lib
@@ -30,6 +30,7 @@ from Dataset import AudioDataset
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from RealNVP import BuildFlow
 ########################################################################
 
 ########################################################################
@@ -94,11 +95,13 @@ if __name__ == "__main__":
     visualizer = visualizer()
 
     # training device
-    device = torch.device('cuda')
+    device = torch.device('cuda:0')  # default device_ids[0]
 
     # training info
     epochs = int(param["fit"]["epochs"])
     batch_size = int(param["fit"]["batch_size"])
+    latent_size = int(param["latent_size"])
+    num_layers = int(param["NF_Layers"])
     
     # load base_directory list
     machine_list = com.get_machine_list(param["dev_directory"])
@@ -106,21 +109,24 @@ if __name__ == "__main__":
     print("Train Machine List: ", machine_list)
     print("=====================================")
 
+    # load pre-trained feature extractor
+    extractor = load_extractor(sample_rate=param["feature"]["sample_rate"],
+                               window_size=param["feature"]["n_fft"],
+                               hop_size=param["feature"]["hop_length"],
+                               mel_bins=param["feature"]["n_mels"],
+                               fmin=param["feature"]["fmin"],
+                               fmax=param["feature"]["fmax"])
+            
+    #extractor = nn.DataParallel(extractor, device_ids=[0, 1])
+    extractor = extractor.to(device=device)
+    extractor.eval()
+
     # loop of the base directory
     for idx, machine in enumerate(machine_list):
         print("\n===========================")
         print("[{idx}/{total}] {machine}".format(machine=machine, idx=idx+1, total=len(machine_list)))
         
         root_path = param["dev_directory"] + "/" + machine
-        
-        model_file_path = "{model}/model_{machine}.pt".format(model=param["model_directory"],
-                                                                     machine=machine)
-        history_img = "{model}/history_{machine}.png".format(model=param["model_directory"],
-                                                                  machine=machine)
-
-        if os.path.exists(model_file_path):
-            com.logger.info("model exists")
-            continue
 
         data_list = com.select_dirs(param=param, machine=machine)
         id_list = com.get_machine_id_list(target_dir=root_path, dir_type="train")
@@ -139,6 +145,13 @@ if __name__ == "__main__":
         
         for _id in id_list:
             # generate dataset
+
+            model_file_path = "{model}/model_{machine}_{_id}.pt".format(model=param["model_directory"], machine=machine, _id=_id)
+
+            if os.path.exists(model_file_path):
+                com.logger.info("model exists")
+                continue
+
             print("\n----------------")
             print("Generating Dataset of Current ID: ", _id)
 
@@ -149,7 +162,8 @@ if __name__ == "__main__":
             val_dl = DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
 
             print("------ DONE -------")
-            
+
+            history_img = "{model}/history_{machine}_{_id}.png".format(model=param["model_directory"], machine=machine, _id=_id)
             
             # train model
             print("\n----------------")
@@ -158,66 +172,66 @@ if __name__ == "__main__":
             train_loss_list = []
             val_loss_list = []
 
+            flow_model = BuildFlow(latent_size=latent_size, num_layers=num_layers)
+            #flow_model = nn.DataParallel(flow_model, device_ids=[0, 1])
+            flow_model = flow_model.to(device)
 
-            # TODO: loss function and optimizer update
-            #loss_function =     
-            #optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+            optimizer = torch.optim.Adam(flow_model.parameters(), lr=1e-6)
 
-            extractor = load_extractor(sample_rate=param["feature"]["sample_rate"],
-                                       window_size=param["feature"]["n_fft"],
-                                       hop_size=param["feature"]["hop_length"],
-                                       mel_bins=param["feature"]["n_mels"],
-                                       fmin=param["feature"]["fmin"],
-                                       fmax=param["feature"]["fmax"])
-            
-
-            extractor = extractor.to(device=device, dtype=torch.float32)
-            extractor.eval()
-
-            #flow_model = None
-
-            for epoch in range(1, 2):
+            for epoch in range(1, epochs):
                 train_loss = 0.0
-                eval_loss = 0.0
-                print("Epoch: {}".format(epoch))
+                val_loss = 0.0
+                print("Epoch: {}".format(epoch))   
 
-                #TODO: Update optimizer and loss function
-                #TODO: Update flow model after finishing model setup
-
-                #flow_model.train()
+                flow_model.train()
 
                 for batch in tqdm(train_dl):
-                    #optimizer.zero_grad()
+                    
+                    optimizer.zero_grad()
+
                     batch = batch.to(device)
                     feature = extractor(batch)
+                    #feature = feature.to(device)
 
-                    #loss = loss_function(batch)
-                    #loss.backward()
-                    #optimizer.step()
-                    #train_loss += loss.item()
+                    loss = flow_model.forward_kld(feature)
 
-                    del batch
-                #train_loss /= len(train_dl)
-                #train_loss_list.append(train_loss)
+                    if ~(torch.isnan(loss) | torch.isinf(loss)):
+                        loss.backward()
+                        optimizer.step()
 
-                #flow_model.eval()
+                        train_loss += loss.item()
+
+                    del batch, feature
+
+                train_loss /= len(train_dl)
+                train_loss_list.append(train_loss)
+
+                flow_model.eval()
                 
                 with torch.no_grad():
                     for batch in tqdm(val_dl):
+
                         batch = batch.to(device)
                         feature = extractor(batch)
-                        #loss = loss_function(batch)
-                        #val_loss += loss.item()
-                        del batch
-                #val_loss /= len(val_dl)
-                #val_loss_list.append(val_loss)
+                        #feature = feature.to(device)
+
+                        loss = flow_model.forward_kld(feature)
+                        val_loss += loss.item()
+                        
+                        del batch, feature
+
+                val_loss /= len(val_dl)
+                val_loss_list.append(val_loss)
+                
+                print("Train Loss: {train_loss}, Validation Loss: {val_loss}".format(train_loss=train_loss, val_loss=val_loss))
             
             visualizer.loss_plot(train_loss_list, val_loss_list)
             visualizer.save_figure(history_img)
-            #torch.save(flow_model.state_dict(), model_file_path)
+
+            torch.save(flow_model.state_dict(), model_file_path)
             com.logger.info("save_model -> {}".format(model_file_path))
 
-            del train_dataset, val_dataset, train_dl, val_dl, extractor
+            del train_dataset, val_dataset, train_dl, val_dl, flow_model
             
             gc.collect()
 

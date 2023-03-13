@@ -1,9 +1,11 @@
-dev_directory : /mnt/Directory/dev_data
+dev_directory : /mnt/HDD2/ASD_team/dev_data
 model_directory: ./model
 result_directory: ./result
 result_file: result.csv
 
 max_fpr : 0.1
+NF_Layers: 10
+latent_size: 2048
 
 feature:
   n_mels: 64
